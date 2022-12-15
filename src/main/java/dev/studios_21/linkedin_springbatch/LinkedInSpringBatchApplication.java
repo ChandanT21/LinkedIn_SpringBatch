@@ -12,13 +12,17 @@ import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
-import org.springframework.batch.item.database.JdbcCursorItemReader;
-import org.springframework.batch.item.database.JdbcPagingItemReader;
-import org.springframework.batch.item.database.PagingQueryProvider;
+import org.springframework.batch.item.database.*;
+import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
 import org.springframework.batch.item.database.support.SqlPagingQueryProviderFactoryBean;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.FlatFileItemWriter;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
+import org.springframework.batch.item.file.transform.BeanWrapperFieldExtractor;
+import org.springframework.batch.item.file.transform.DelimitedLineAggregator;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.batch.item.json.JacksonJsonObjectMarshaller;
+import org.springframework.batch.item.json.builder.JsonFileItemWriterBuilder;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
@@ -39,7 +43,13 @@ public class LinkedInSpringBatchApplication {
     public DataSource dataSource;
     public static String ORDER_SQL = "SELECT * from SHIPPED_ORDER ORDER BY order_id";
     public static String[] header = new String[] {"order_id", "first_name","last_name","email","cost","item_id","item_name","ship_date"};
-
+    public static String[] names = new String[] {"orderId", "firstName","lastName","email","cost","itemId","itemName","shipDate"};
+    public static String INSERT_ORDER_SQL = "INSERT into SHIPPED_ORDER_OUTPUT(" +
+            "order_id, first_name, last_name, email, item_id, item_name, cost, ship_date) " +
+            "values(?,?,?,?,?,?,?,?)";
+    public static String INSERT_NAMED_ORDER_SQL = "INSERT into SHIPPED_ORDER_OUTPUT(" +
+            "order_id, first_name, last_name, email, cost, item_id, item_name, ship_date) " +
+            "values(:orderId, :firstName, :lastName, :email, :cost, :itemId, :itemName, :shipDate)";
 
     @Autowired
     public JobBuilderFactory jobBuilderFactory;
@@ -78,8 +88,6 @@ public class LinkedInSpringBatchApplication {
         return itemReader;
     }
 
-
-
     @Bean
     public ItemReader<Order> itemReader_FlatFile() {
         FlatFileItemReader<Order> itemReader = new FlatFileItemReader<>();
@@ -108,16 +116,53 @@ public class LinkedInSpringBatchApplication {
             return this.stepBuilderFactory.get("chunkBasedStep")
                     .<Order,Order>chunk(10)
                     .reader(itemReader())
-                    .writer(new ItemWriter<Order>() {
-                        @Override
-                        public void write(List<? extends Order> list) throws Exception {
-                            System.out.printf("Received list of size: %s \n", list.size());
-                            list.forEach(System.out::println);
-                        }
-                    }).build();
+                    .writer(itemWriter_JSONItemFile()).build();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Bean
+    public ItemWriter<Order> itemWriter () {
+        return new JdbcBatchItemWriterBuilder<Order>()
+                .dataSource(dataSource)
+                .sql(INSERT_NAMED_ORDER_SQL)
+                .beanMapped()
+                .build();
+    }
+    @Bean
+    public ItemWriter<Order> itemWriter_PreparedStatementSetter() {
+        return new JdbcBatchItemWriterBuilder<Order>()
+                .dataSource(dataSource)
+                .sql(INSERT_ORDER_SQL)
+                .itemPreparedStatementSetter(new OrderItemPreparedStatementSetter())
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<Order> itemWriter_JSONItemFile () {
+        return new JsonFileItemWriterBuilder<Order>()
+                .jsonObjectMarshaller(new JacksonJsonObjectMarshaller<Order>())
+                .resource(new FileSystemResource("src/main/resources/data/JSON_Output_Order.json"))
+                .name("jsonItemWriter")
+                .build();
+    }
+    @Bean
+    public ItemWriter<Order> itemWriter_FlatFile() {
+        BeanWrapperFieldExtractor<Order> fieldExtractor = new BeanWrapperFieldExtractor<Order>();
+        fieldExtractor.setNames(names); // needs to match the POJO field names else it will throw an error
+
+        DelimitedLineAggregator<Order> aggregator = new DelimitedLineAggregator<Order>();
+        aggregator.setDelimiter(",");
+        aggregator.setFieldExtractor(fieldExtractor);
+
+        FlatFileItemWriter<Order> itemWriter = new FlatFileItemWriter<Order>();
+        itemWriter.setLineAggregator(aggregator);
+        itemWriter.setResource(new FileSystemResource("src/main/resources/data/Output_Order.csv"));
+        itemWriter.setAppendAllowed(true);
+        itemWriter.setShouldDeleteIfEmpty(true);
+        itemWriter.setShouldDeleteIfExists(true);
+        return itemWriter;
     }
 
     public static void main(String[] args) {
