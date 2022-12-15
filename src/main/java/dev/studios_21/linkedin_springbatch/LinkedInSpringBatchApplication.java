@@ -2,6 +2,7 @@ package dev.studios_21.linkedin_springbatch;
 
 import entity.Order;
 import entity.TrackedOrder;
+import org.glassfish.grizzly.config.dom.ThreadPool;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
@@ -34,6 +35,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import javax.sql.DataSource;
 import java.io.File;
@@ -54,6 +57,10 @@ public class LinkedInSpringBatchApplication {
     public static String INSERT_NAMED_ORDER_SQL = "INSERT into SHIPPED_ORDER_OUTPUT(" +
             "order_id, first_name, last_name, email, cost, item_id, item_name, ship_date) " +
             "values(:orderId, :firstName, :lastName, :email, :cost, :itemId, :itemName, :shipDate)";
+
+    public static String INSERT_TRACKED_ORDER_SQL = "INSERT into TRACKED_ORDER(" +
+            "order_id, first_name, last_name, email, cost, item_id, item_name, ship_date, tracking_number, free_shipping) " +
+            "values(:orderId, :firstName, :lastName, :email, :cost, :itemId, :itemName, :shipDate, :trackingNumber, :freeShipping)";
 
     @Autowired
     public JobBuilderFactory jobBuilderFactory;
@@ -79,6 +86,7 @@ public class LinkedInSpringBatchApplication {
         itemReader.setQueryProvider(queryProvider());
         itemReader.setRowMapper(new OrderRowMapper());
         itemReader.setPageSize(10); //sync with chunk size
+        itemReader.setSaveState(false); //set to False for multi-threading
         return itemReader;
     }
 
@@ -115,13 +123,28 @@ public class LinkedInSpringBatchApplication {
     }
 
     @Bean
+    public TaskExecutor taskExecutor () {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(11);
+        return executor;
+    }
+    @Bean
     public Step chunkBasedStep() {
         try {
             return this.stepBuilderFactory.get("chunkBasedStep")
                     .<Order,TrackedOrder>chunk(10)
                     .reader(itemReader())
                     .processor(compositeItemProcessor())
-                    .writer(itemWriter_JSONItemFile()).build();
+                    .faultTolerant()
+//                    .retry(OrderProcessingException.class)
+//                    .retryLimit(3)
+//                    .listener(new CustomRetryListener())
+                    .skip(OrderProcessingException.class)
+                    .skipLimit(10)
+                    .listener(new CustomSkipListener())
+                    .writer(itemWriter())
+                    .taskExecutor(taskExecutor()).build();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -154,7 +177,8 @@ public class LinkedInSpringBatchApplication {
     public ItemWriter<Order> itemWriter () {
         return new JdbcBatchItemWriterBuilder<Order>()
                 .dataSource(dataSource)
-                .sql(INSERT_NAMED_ORDER_SQL)
+//                .sql(INSERT_NAMED_ORDER_SQL)
+                .sql(INSERT_TRACKED_ORDER_SQL)
                 .beanMapped()
                 .build();
     }
