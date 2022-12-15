@@ -1,6 +1,7 @@
 package dev.studios_21.linkedin_springbatch;
 
 import entity.Order;
+import entity.TrackedOrder;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
@@ -10,6 +11,7 @@ import org.springframework.batch.core.configuration.annotation.StepBuilderFactor
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.database.*;
@@ -23,6 +25,8 @@ import org.springframework.batch.item.file.transform.DelimitedLineAggregator;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.batch.item.json.JacksonJsonObjectMarshaller;
 import org.springframework.batch.item.json.builder.JsonFileItemWriterBuilder;
+import org.springframework.batch.item.support.builder.CompositeItemProcessorBuilder;
+import org.springframework.batch.item.validator.BeanValidatingItemProcessor;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
@@ -114,13 +118,37 @@ public class LinkedInSpringBatchApplication {
     public Step chunkBasedStep() {
         try {
             return this.stepBuilderFactory.get("chunkBasedStep")
-                    .<Order,Order>chunk(10)
+                    .<Order,TrackedOrder>chunk(10)
                     .reader(itemReader())
+                    .processor(compositeItemProcessor())
                     .writer(itemWriter_JSONItemFile()).build();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
+
+    @Bean
+    public ItemProcessor<Order,TrackedOrder> compositeItemProcessor() {
+        return new CompositeItemProcessorBuilder<Order,TrackedOrder>()
+                .delegates(trackedOrderItemProcessor(), freeShippingItemProcessor())
+                .build();
+    }
+
+    @Bean
+    public ItemProcessor<TrackedOrder, TrackedOrder> freeShippingItemProcessor() {
+        return new FreeShippingItemProcessor();
+    }
+    @Bean
+    public ItemProcessor<Order, TrackedOrder> trackedOrderItemProcessor() {
+        return new TrackedOrderItemProcessor();
+    }
+
+//    @Bean
+//    public ItemProcessor<Order,Order> orderValidatingItemProcessor() {
+//        BeanValidatingItemProcessor<Order> processor = new BeanValidatingItemProcessor<Order>();
+//        processor.setFilter(true);
+//        return processor;
+//    }
 
     @Bean
     public ItemWriter<Order> itemWriter () {
@@ -140,9 +168,9 @@ public class LinkedInSpringBatchApplication {
     }
 
     @Bean
-    public ItemWriter<Order> itemWriter_JSONItemFile () {
-        return new JsonFileItemWriterBuilder<Order>()
-                .jsonObjectMarshaller(new JacksonJsonObjectMarshaller<Order>())
+    public ItemWriter<TrackedOrder> itemWriter_JSONItemFile () {
+        return new JsonFileItemWriterBuilder<TrackedOrder>()
+                .jsonObjectMarshaller(new JacksonJsonObjectMarshaller<TrackedOrder>())
                 .resource(new FileSystemResource("src/main/resources/data/JSON_Output_Order.json"))
                 .name("jsonItemWriter")
                 .build();
