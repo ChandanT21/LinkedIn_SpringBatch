@@ -3,13 +3,19 @@ package dev.studios_21.linkedin_springbatch;
 import entity.Order;
 import entity.TrackedOrder;
 import org.glassfish.grizzly.config.dom.ThreadPool;
+import org.quartz.*;
+import org.springframework.batch.core.*;
 import org.springframework.batch.core.Job;
-import org.springframework.batch.core.Step;
-import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.item.ItemProcessor;
@@ -36,15 +42,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.quartz.QuartzJobBean;
 
 import javax.sql.DataSource;
 import java.io.File;
+import java.time.LocalDateTime;
+import java.util.Date;
 import java.util.List;
 
 @SpringBootApplication
 @EnableBatchProcessing
-public class LinkedInSpringBatchApplication {
+@EnableScheduling
+public class LinkedInSpringBatchApplication extends QuartzJobBean {
 
     @Autowired
     public DataSource dataSource;
@@ -57,11 +69,56 @@ public class LinkedInSpringBatchApplication {
     public static String INSERT_NAMED_ORDER_SQL = "INSERT into SHIPPED_ORDER_OUTPUT(" +
             "order_id, first_name, last_name, email, cost, item_id, item_name, ship_date) " +
             "values(:orderId, :firstName, :lastName, :email, :cost, :itemId, :itemName, :shipDate)";
-
     public static String INSERT_TRACKED_ORDER_SQL = "INSERT into TRACKED_ORDER(" +
             "order_id, first_name, last_name, email, cost, item_id, item_name, ship_date, tracking_number, free_shipping) " +
             "values(:orderId, :firstName, :lastName, :email, :cost, :itemId, :itemName, :shipDate, :trackingNumber, :freeShipping)";
 
+    @Autowired
+    public JobLauncher jobLauncher;
+
+    @Scheduled(cron = "0/30 * * * * *")
+    public void runJob () throws JobInstanceAlreadyCompleteException, JobExecutionAlreadyRunningException, JobParametersInvalidException, JobRestartException {
+        JobParametersBuilder parametersBuilder = new JobParametersBuilder();
+        parametersBuilder.addDate("runTime", new Date());
+        this.jobLauncher.run(job(),parametersBuilder.toJobParameters());
+    }
+
+    @Autowired
+    public JobExplorer jobExplorer;
+
+    @Bean
+    public JobDetail jobDetail() {
+        return JobBuilder.newJob(LinkedInSpringBatchApplication.class)
+                .storeDurably().build();
+    }
+
+    @Bean
+    public Trigger trigger () {
+        SimpleScheduleBuilder scheduleBuilder = SimpleScheduleBuilder.simpleSchedule()
+                .withIntervalInSeconds(30)
+                .repeatForever();
+        return TriggerBuilder.newTrigger()
+                .forJob(jobDetail())
+                .withSchedule(scheduleBuilder)
+                .build();
+    }
+    @Override
+    protected void executeInternal(JobExecutionContext context) throws org.quartz.JobExecutionException {
+        JobParameters parameters = new JobParametersBuilder(jobExplorer)
+                .getNextJobParameters(job())
+                .toJobParameters();
+        try {
+            this.jobLauncher.run(job(),parameters);
+        } catch (JobExecutionAlreadyRunningException e) {
+            throw new RuntimeException(e);
+        } catch (JobRestartException e) {
+            throw new RuntimeException(e);
+        } catch (JobInstanceAlreadyCompleteException e) {
+            throw new RuntimeException(e);
+        } catch (JobParametersInvalidException e) {
+            throw new RuntimeException(e);
+        }
+    }
     @Autowired
     public JobBuilderFactory jobBuilderFactory;
 
@@ -118,7 +175,9 @@ public class LinkedInSpringBatchApplication {
     @Bean
     public Job job() {
         return this.jobBuilderFactory.get("job")
-                .start(chunkBasedStep())
+                .incrementer(new RunIdIncrementer())
+                .start(chunkBasedStep_Scheduled())
+//                .start(chunkBasedStep())
                 .build();
     }
 
@@ -128,6 +187,16 @@ public class LinkedInSpringBatchApplication {
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(11);
         return executor;
+    }
+    @Bean
+    public Step chunkBasedStep_Scheduled() {
+        return this.stepBuilderFactory.get("step").tasklet(new Tasklet() {
+            @Override
+            public RepeatStatus execute(StepContribution stepContribution, ChunkContext chunkContext) throws Exception {
+                System.out.println("The run time is: " + LocalDateTime.now());
+                return RepeatStatus.FINISHED;
+            }
+        }).build();
     }
     @Bean
     public Step chunkBasedStep() {
@@ -220,5 +289,4 @@ public class LinkedInSpringBatchApplication {
     public static void main(String[] args) {
         SpringApplication.run(LinkedInSpringBatchApplication.class, args);
     }
-
 }
